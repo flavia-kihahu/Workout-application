@@ -1,7 +1,12 @@
 from flask import Flask, request, jsonify
 from flask_migrate import Migrate
+from marshmallow import ValidationError
 from models import db, Workout, Exercise, WorkoutExercises
-
+from schema import (
+    workout_schema, workouts_schema,
+    exercise_schema, exercises_schema,
+    workout_exercise_schema
+)
 app = Flask(__name__)
 app.config["SQLALCHEMY_DATABASE_URI"] = "sqlite:///app.db"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -9,78 +14,84 @@ db.init_app(app)
 migrate = Migrate(app, db)
 @app.get("/workouts")
 def get_workouts():
-    return jsonify([{"id": w.id, "date": str(w.date),
-                     "duration_minutes": w.duration_minutes, "notes": w.notes}
-                    for w in Workout.query.all()])
+    return jsonify(workouts_schema.dump(Workout.query.all()))
 @app.get("/workouts/<int:id>")
 def get_workout(id):
-    w = db.session.get(Workout, id)
-    if not w:
+    workout = db.session.get(Workout, id)
+    if not workout:
         return {"error": "Workout not found"}, 404
-    return jsonify({"id": w.id, "date": str(w.date),
-                    "duration_minutes": w.duration_minutes, "notes": w.notes,
-                    "exercises": [{"id": x.exercise.id, "name": x.exercise.name,
-                                   "reps": x.reps, "sets": x.sets,
-                                   "duration_seconds": x.duration_seconds}
-                                  for x in w.workout_exercises]})
+    data = workout_schema.dump(workout)
+    data["exercises"] = [{
+        "exercise": exercise_schema.dump(link.exercise),
+        "reps": link.reps, "sets": link.sets,
+        "duration_seconds": link.duration_seconds
+    } for link in workout.workout_exercises]
+    return jsonify(data)
 @app.post("/workouts")
 def create_workout():
-    data = request.json or {}
-    w = Workout(date=__import__("datetime").date.fromisoformat(data["date"]),
-                duration_minutes=data["duration_minutes"], notes=data.get("notes"))
-    db.session.add(w)
-    db.session.commit()
-    return jsonify({"id": w.id, "date": str(w.date)}), 201
+    try:
+        workout = Workout(**workout_schema.load(request.get_json() or {}))
+        db.session.add(workout)
+        db.session.commit()
+        return jsonify(workout_schema.dump(workout)), 201
+    except (ValidationError, ValueError, TypeError) as error:
+        db.session.rollback()
+        return {"error": str(error)}, 400
 @app.delete("/workouts/<int:id>")
 def delete_workout(id):
-    w = db.session.get(Workout, id)
-    if not w:
+    workout = db.session.get(Workout, id)
+    if not workout:
         return {"error": "Workout not found"}, 404
-    db.session.delete(w)
+    db.session.delete(workout)
     db.session.commit()
     return "", 204
 @app.get("/exercises")
 def get_exercises():
-    return jsonify([{"id": e.id, "name": e.name, "category": e.category,
-                     "equipment_needed": e.equipment_needed}
-                    for e in Exercise.query.all()])
-
+    return jsonify(exercises_schema.dump(Exercise.query.all()))
 @app.get("/exercises/<int:id>")
 def get_exercise(id):
-    e = db.session.get(Exercise, id)
-    if not e:
+    exercise = db.session.get(Exercise, id)
+    if not exercise:
         return {"error": "Exercise not found"}, 404
-    return jsonify({"id": e.id, "name": e.name, "category": e.category,
-                    "equipment_needed": e.equipment_needed,
-                    "workouts": [{"id": x.workout.id, "reps": x.reps,
-                                  "sets": x.sets, "duration_seconds": x.duration_seconds}
-                                 for x in e.workout_exercises]})
+    data = exercise_schema.dump(exercise)
+    data["workouts"] = [{
+        "workout": workout_schema.dump(link.workout),
+        "reps": link.reps, "sets": link.sets,
+        "duration_seconds": link.duration_seconds
+    } for link in exercise.workout_exercises]
+    return jsonify(data)
 @app.post("/exercises")
 def create_exercise():
-    data = request.json or {}
-    e = Exercise(name=data["name"], category=data["category"],
-                 equipment_needed=data.get("equipment_needed", False))
-    db.session.add(e)
-    db.session.commit()
-    return jsonify({"id": e.id, "name": e.name}), 201
+    try:
+        exercise = Exercise(**exercise_schema.load(request.get_json() or {}))
+        db.session.add(exercise)
+        db.session.commit()
+        return jsonify(exercise_schema.dump(exercise)), 201
+    except (ValidationError, ValueError, TypeError) as error:
+        db.session.rollback()
+        return {"error": str(error)}, 400
 @app.delete("/exercises/<int:id>")
 def delete_exercise(id):
-    e = db.session.get(Exercise, id)
-    if not e:
+    exercise = db.session.get(Exercise, id)
+    if not exercise:
         return {"error": "Exercise not found"}, 404
-    db.session.delete(e)
+    db.session.delete(exercise)
     db.session.commit()
     return "", 204
 @app.post("/workouts/<int:workout_id>/exercises/<int:exercise_id>/workout_exercises")
 def add_exercise(workout_id, exercise_id):
     if not db.session.get(Workout, workout_id) or not db.session.get(Exercise, exercise_id):
         return {"error": "Workout or exercise not found"}, 404
-    x = WorkoutExercises(workout_id=workout_id, exercise_id=exercise_id,
-                         **{k: (request.json or {}).get(k)
-                            for k in ("reps", "sets", "duration_seconds")})
-    db.session.add(x)
-    db.session.commit()
-    return jsonify({"id": x.id, "workout_id": workout_id,
-                    "exercise_id": exercise_id}), 201
+    try:
+        link = WorkoutExercises(
+            workout_id=workout_id, exercise_id=exercise_id,
+            **workout_exercise_schema.load(request.get_json() or {})
+        )
+        db.session.add(link)
+        db.session.commit()
+        return jsonify(workout_exercise_schema.dump(link)), 201
+    except (ValidationError, ValueError, TypeError) as error:
+        db.session.rollback()
+        return {"error": str(error)}, 400
 if __name__ == "__main__":
     app.run(port=5555, debug=True)
