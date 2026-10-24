@@ -1,0 +1,17 @@
+# Database
+instance/
+*.db
+*.sqlite3
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Environment
+.env
+.venv/
+venv/
+
+# Editor / OS
+.vscode/
+.DS_Store
